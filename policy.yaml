@@ -1,0 +1,50 @@
+# gateai policy. Pass with --config policy.yaml; without it the built-in
+# defaults (identical to this file) are used.
+
+concurrency: 4
+cache: .gateai/verdicts.json
+
+defaults:
+  model: claude-sonnet-5
+  effort: medium          # low | medium | high | xhigh | max
+  max_tokens: 16000       # thinking shares this budget with the answer
+  max_iterations: 14      # tool calls per finding before we give up
+  min_confidence: 0.7     # below this, a decisive verdict becomes needs_human
+  skeptic: true           # adversarial second pass over every dismissal
+
+pipeline:
+  # Stage 1 — AI SAST. Runs first because it is the cheapest signal about the
+  # code you actually wrote.
+  - stage: sast
+    gate:
+      block_on:
+        verdict: exploitable
+        min_severity: high
+        min_confidence: 0.7
+      needs_human: warn     # block | warn | ignore
+      on_fail: stop         # stop | continue
+
+  # Stage 2 — AI SCA. Only reached when SAST passed. require_reachable is what
+  # keeps unreachable CVEs from failing every build.
+  - stage: sca
+    gate:
+      block_on:
+        verdict: exploitable
+        min_severity: critical
+        min_confidence: 0.7
+      require_reachable: true
+      needs_human: warn
+      on_fail: stop
+
+  # Stage 3 — AI BCA. A no-op unless --artifact points at an image or binary.
+  - stage: bca
+    # Cheaper model: this stage compares SBOMs, it does not read code.
+    model: claude-haiku-4-5
+    effort: low
+    skeptic: false
+    gate:
+      block_on:
+        verdict: exploitable
+        min_severity: critical
+      needs_human: warn
+      on_fail: stop

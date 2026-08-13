@@ -1,0 +1,5 @@
+bin/
+.gateai/
+.git/
+*.md
+report.json
