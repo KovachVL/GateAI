@@ -10,7 +10,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/KovachVL/GateAI/internal/cache"
 	"github.com/KovachVL/GateAI/internal/codeview"
 	"github.com/KovachVL/GateAI/internal/collector"
@@ -18,24 +17,29 @@ import (
 	"github.com/KovachVL/GateAI/internal/policy"
 	"github.com/KovachVL/GateAI/internal/triage"
 	"github.com/KovachVL/GateAI/internal/verdict"
+	"github.com/anthropics/anthropic-sdk-go"
 )
 
 type StageResult struct {
-	Stage              string            `json:"stage"`
-	Result             string            `json:"result"`
-	Skipped            string            `json:"skipped_reason,omitempty"`
-	Error              string            `json:"error,omitempty"`
-	Scanned            int               `json:"scanned"`
-	Triaged            int               `json:"triaged"`
-	CacheHits          int               `json:"cache_hits"`
-	TriageErrors       int               `json:"triage_errors"`
-	Blocking           []verdict.Verdict `json:"blocking,omitempty"`
-	NeedsHuman         []verdict.Verdict `json:"needs_human,omitempty"`
-	Suppressed         int               `json:"suppressed"`
-	SuppressedVerdicts []verdict.Verdict `json:"suppressed_verdicts,omitempty"`
-	InTokens           int64             `json:"in_tokens"`
-	OutTokens          int64             `json:"out_tokens"`
-	Duration           string            `json:"duration"`
+	Stage               string            `json:"stage"`
+	Result              string            `json:"result"`
+	Skipped             string            `json:"skipped_reason,omitempty"`
+	Error               string            `json:"error,omitempty"`
+	Scanned             int               `json:"scanned"`
+	Triaged             int               `json:"triaged"`
+	CacheHits           int               `json:"cache_hits"`
+	TriageErrors        int               `json:"triage_errors"`
+	Blocking            []verdict.Verdict `json:"blocking,omitempty"`
+	NeedsHuman          []verdict.Verdict `json:"needs_human,omitempty"`
+	Suppressed          int               `json:"suppressed"`
+	SuppressedVerdicts  []verdict.Verdict `json:"suppressed_verdicts,omitempty"`
+	InTokens            int64             `json:"in_tokens"`
+	OutTokens           int64             `json:"out_tokens"`
+	BaseInTokens        int64             `json:"base_in_tokens"`
+	CacheReadTokens     int64             `json:"cache_read_tokens"`
+	CacheCreationTokens int64             `json:"cache_creation_tokens"`
+	Turns               int               `json:"turns"`
+	Duration            string            `json:"duration"`
 }
 
 type Report struct {
@@ -183,6 +187,10 @@ func (r *Runner) runStage(ctx context.Context, stage policy.Stage) StageResult {
 	for _, v := range verdicts {
 		sr.InTokens += v.InTokens
 		sr.OutTokens += v.OutTokens
+		sr.BaseInTokens += v.BaseInTokens
+		sr.CacheReadTokens += v.CacheReadTokens
+		sr.CacheCreationTokens += v.CacheCreationTokens
+		sr.Turns += v.Turns
 		if v.Error != "" {
 			sr.TriageErrors++
 			if firstErr == "" {
@@ -216,8 +224,14 @@ func (r *Runner) runStage(ctx context.Context, stage policy.Stage) StageResult {
 	}
 	sr.Duration = time.Since(started).String()
 
-	r.logf("stage %s: %s — %d blocking, %d needs-human, %d suppressed (%d cache hits)",
-		stage.Stage, upper(sr.Result), len(blocking), len(needsHuman), len(suppressed), hits)
+	cacheHitPct := 0.0
+	if promptTokens := sr.BaseInTokens + sr.CacheReadTokens + sr.CacheCreationTokens; promptTokens > 0 {
+		cacheHitPct = 100 * float64(sr.CacheReadTokens) / float64(promptTokens)
+	}
+	r.logf("stage %s: %s — %d blocking, %d needs-human, %d suppressed (%d verdict cache hits) — "+
+		"%d in (%d base, %d cache read [%.0f%%], %d cache write), %d out, %d turns",
+		stage.Stage, upper(sr.Result), len(blocking), len(needsHuman), len(suppressed), hits,
+		sr.InTokens, sr.BaseInTokens, sr.CacheReadTokens, cacheHitPct, sr.CacheCreationTokens, sr.OutTokens, sr.Turns)
 	return sr
 }
 

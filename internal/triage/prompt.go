@@ -7,7 +7,7 @@ import (
 	"github.com/KovachVL/GateAI/internal/finding"
 )
 
-const PromptVersion = "v5"
+const PromptVersion = "v8"
 
 const systemPrompt = `You are a security triage engine. You receive one finding from an automated scanner and decide whether it is actually exploitable in this specific codebase.
 

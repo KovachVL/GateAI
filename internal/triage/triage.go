@@ -7,10 +7,10 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/KovachVL/GateAI/internal/codeview"
 	"github.com/KovachVL/GateAI/internal/finding"
 	"github.com/KovachVL/GateAI/internal/verdict"
+	"github.com/anthropics/anthropic-sdk-go"
 )
 
 type Options struct {
@@ -53,13 +53,21 @@ func New(client *anthropic.Client, view *codeview.View, opts Options) *Triager {
 func (t *Triager) Options() Options { return t.opts }
 
 type usage struct {
-	in  int64
-	out int64
+	in            int64
+	out           int64
+	base          int64
+	cacheRead     int64
+	cacheCreation int64
+	turns         int
 }
 
 func (u *usage) add(x anthropic.BetaUsage) {
 	u.in += x.InputTokens + x.CacheReadInputTokens + x.CacheCreationInputTokens
 	u.out += x.OutputTokens
+	u.base += x.InputTokens
+	u.cacheRead += x.CacheReadInputTokens
+	u.cacheCreation += x.CacheCreationInputTokens
+	u.turns++
 }
 
 type runResult struct {
@@ -78,8 +86,16 @@ func (t *Triager) runLoop(ctx context.Context, layer finding.Layer, userMessage 
 	messages := []anthropic.BetaMessageParam{
 		anthropic.NewBetaUserMessage(anthropic.NewBetaTextBlock(userMessage)),
 	}
+	markedMsg, markedBlock := -1, -1
 
 	for i := 0; i < t.opts.MaxIterations; i++ {
+		if markedMsg >= 0 {
+			clearCacheControl(&messages[markedMsg].Content[markedBlock])
+		}
+		markedMsg = len(messages) - 1
+		markedBlock = len(messages[markedMsg].Content) - 1
+		setCacheControl(&messages[markedMsg].Content[markedBlock])
+
 		params.Messages = messages
 		msg, err := t.client.Beta.Messages.New(ctx, params)
 		if err != nil {
@@ -160,25 +176,37 @@ func (t *Triager) finalize(res runResult, f *finding.Finding) verdict.Verdict {
 			reason += ". Last text: " + truncate(res.lastText, 400)
 		}
 		return verdict.Verdict{
-			FindingID:        f.ID,
-			Kind:             verdict.NeedsHuman,
-			AdjustedSeverity: f.RawSeverity,
-			Reasoning:        reason,
-			Model:            t.opts.Model,
-			InTokens:         res.usage.in,
-			OutTokens:        res.usage.out,
-			Finding:          f,
+			FindingID:           f.ID,
+			Kind:                verdict.NeedsHuman,
+			AdjustedSeverity:    f.RawSeverity,
+			Reasoning:           reason,
+			Model:               t.opts.Model,
+			InTokens:            res.usage.in,
+			OutTokens:           res.usage.out,
+			BaseInTokens:        res.usage.base,
+			CacheReadTokens:     res.usage.cacheRead,
+			CacheCreationTokens: res.usage.cacheCreation,
+			Turns:               res.usage.turns,
+			Finding:             f,
 		}
 	}
 
-	repaired := repairVerdict(res.capture.verdict)
-
-	v := toVerdict(res.capture.verdict, f)
-	v.Model = t.opts.Model
+	v := t.buildVerdict(res.capture.verdict, f)
 	v.InTokens = res.usage.in
 	v.OutTokens = res.usage.out
-	v.Repaired = repaired
+	v.BaseInTokens = res.usage.base
+	v.CacheReadTokens = res.usage.cacheRead
+	v.CacheCreationTokens = res.usage.cacheCreation
+	v.Turns = res.usage.turns
+	return v
+}
 
+func (t *Triager) buildVerdict(in *verdictInput, f *finding.Finding) verdict.Verdict {
+	repaired := repairVerdict(in)
+
+	v := toVerdict(in, f)
+	v.Model = t.opts.Model
+	v.Repaired = repaired
 	v.Evidence = cleanEvidence(v.Evidence)
 
 	switch {
@@ -214,6 +242,10 @@ func (t *Triager) challenge(ctx context.Context, f *finding.Finding, first verdi
 	res, err := t.runLoop(ctx, f.Layer, b.String())
 	first.InTokens += res.usage.in
 	first.OutTokens += res.usage.out
+	first.BaseInTokens += res.usage.base
+	first.CacheReadTokens += res.usage.cacheRead
+	first.CacheCreationTokens += res.usage.cacheCreation
+	first.Turns += res.usage.turns
 
 	if err != nil || res.capture.verdict == nil {
 		first.Kind = verdict.NeedsHuman
@@ -221,10 +253,13 @@ func (t *Triager) challenge(ctx context.Context, f *finding.Finding, first verdi
 		return first
 	}
 
-	second := toVerdict(res.capture.verdict, f)
-	second.Model = t.opts.Model
+	second := t.buildVerdict(res.capture.verdict, f)
 	second.InTokens = first.InTokens
 	second.OutTokens = first.OutTokens
+	second.BaseInTokens = first.BaseInTokens
+	second.CacheReadTokens = first.CacheReadTokens
+	second.CacheCreationTokens = first.CacheCreationTokens
+	second.Turns = first.Turns
 
 	if second.Kind == verdict.NotExploitable {
 		first.Reasoning += " [skeptic pass agreed: " + truncate(second.Reasoning, 300) + "]"
@@ -238,6 +273,30 @@ func (t *Triager) challenge(ctx context.Context, f *finding.Finding, first verdi
 	second.Reasoning = "[skeptic pass refuted the first-pass dismissal] " + second.Reasoning +
 		" || first pass said: " + truncate(first.Reasoning, 300)
 	return second
+}
+
+func setCacheControl(b *anthropic.BetaContentBlockParamUnion) {
+	cc := anthropic.NewBetaCacheControlEphemeralParam()
+	switch {
+	case b.OfText != nil:
+		b.OfText.CacheControl = cc
+	case b.OfToolUse != nil:
+		b.OfToolUse.CacheControl = cc
+	case b.OfToolResult != nil:
+		b.OfToolResult.CacheControl = cc
+	}
+}
+
+func clearCacheControl(b *anthropic.BetaContentBlockParamUnion) {
+	var zero anthropic.BetaCacheControlEphemeralParam
+	switch {
+	case b.OfText != nil:
+		b.OfText.CacheControl = zero
+	case b.OfToolUse != nil:
+		b.OfToolUse.CacheControl = zero
+	case b.OfToolResult != nil:
+		b.OfToolResult.CacheControl = zero
+	}
 }
 
 func textOf(msg *anthropic.BetaMessage) string {

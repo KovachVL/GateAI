@@ -29,5 +29,10 @@ type Verdict struct {
 	InTokens  int64  `json:"in_tokens,omitempty"`
 	OutTokens int64  `json:"out_tokens,omitempty"`
 
+	BaseInTokens        int64 `json:"base_in_tokens,omitempty"`
+	CacheReadTokens     int64 `json:"cache_read_tokens,omitempty"`
+	CacheCreationTokens int64 `json:"cache_creation_tokens,omitempty"`
+	Turns               int   `json:"turns,omitempty"`
+
 	Finding *finding.Finding `json:"finding,omitempty"`
 }

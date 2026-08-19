@@ -10,13 +10,13 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/KovachVL/GateAI/internal/cache"
 	"github.com/KovachVL/GateAI/internal/codeview"
 	"github.com/KovachVL/GateAI/internal/collector"
 	"github.com/KovachVL/GateAI/internal/pipeline"
 	"github.com/KovachVL/GateAI/internal/policy"
 	"github.com/KovachVL/GateAI/internal/verdict"
+	"github.com/anthropics/anthropic-sdk-go"
 )
 
 func main() {
@@ -234,10 +234,12 @@ func loadBaseline(path string) (map[string]bool, error) {
 
 func printReport(w *os.File, r *pipeline.Report, showSuppressed bool) {
 	fmt.Fprintf(w, "\n=== gateai: %s ===\n", r.Target)
-	var inTok, outTok int64
+	var inTok, outTok, cacheRead, cacheCreation int64
 	for _, s := range r.Stages {
 		inTok += s.InTokens
 		outTok += s.OutTokens
+		cacheRead += s.CacheReadTokens
+		cacheCreation += s.CacheCreationTokens
 
 		switch s.Result {
 		case "skipped":
@@ -264,8 +266,12 @@ func printReport(w *os.File, r *pipeline.Report, showSuppressed bool) {
 			}
 		}
 	}
-	fmt.Fprintf(w, "\n--- result: %s (tokens: %d in / %d out) ---\n",
-		strings.ToUpper(r.Result), inTok, outTok)
+	cacheHitPct := 0.0
+	if inTok > 0 {
+		cacheHitPct = 100 * float64(cacheRead) / float64(inTok)
+	}
+	fmt.Fprintf(w, "\n--- result: %s (tokens: %d in [%d cache read, %.0f%% hit rate; %d cache write] / %d out) ---\n",
+		strings.ToUpper(r.Result), inTok, cacheRead, cacheHitPct, cacheCreation, outTok)
 }
 
 func printVerdict(w *os.File, label string, v verdict.Verdict) {

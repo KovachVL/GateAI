@@ -185,6 +185,38 @@ func TestRepairVerdictLeavesCleanVerdictsAlone(t *testing.T) {
 	}
 }
 
+func TestRepairVerdictReplacesPlaceholderReasoning(t *testing.T) {
+	in := &verdictInput{
+		Verdict:          "needs_human",
+		Reasoning:        "placeholder",
+		AdjustedSeverity: "low",
+	}
+	if !repairVerdict(in) {
+		t.Fatal("repairVerdict reported nothing to repair")
+	}
+	if in.Reasoning == "placeholder" || in.Reasoning == "" {
+		t.Errorf("bare placeholder reasoning was not replaced with an explanation: %q", in.Reasoning)
+	}
+}
+
+func TestRepairVerdictReplacesShortStubFields(t *testing.T) {
+	in := &verdictInput{
+		Verdict:          "needs_human",
+		Reasoning:        "x",
+		SuggestedFix:     ">",
+		AdjustedSeverity: "low",
+	}
+	if !repairVerdict(in) {
+		t.Fatal("repairVerdict reported nothing to repair")
+	}
+	if in.Reasoning == "x" || in.Reasoning == "" {
+		t.Errorf("one-word reasoning stub was not replaced with an explanation: %q", in.Reasoning)
+	}
+	if in.SuggestedFix != "" {
+		t.Errorf("one-character suggested_fix stub should have been cleared, got %q", in.SuggestedFix)
+	}
+}
+
 // Real runs cite evidence as "path:line - why it matters". Treating that as
 // unverifiable downgraded a correct verdict to needs_human.
 func TestEvidenceAcceptsAnnotatedLocations(t *testing.T) {

@@ -7,10 +7,10 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/KovachVL/GateAI/internal/codeview"
 	"github.com/KovachVL/GateAI/internal/finding"
 	"github.com/KovachVL/GateAI/internal/verdict"
+	"github.com/anthropics/anthropic-sdk-go"
 )
 
 type readFileInput struct {
@@ -270,10 +270,23 @@ var (
 
 func isPlaceholder(s string) bool {
 	switch strings.ToLower(strings.TrimSpace(s)) {
-	case "", "n/a", "na", "none", "null", "-":
+	case "", "n/a", "na", "none", "null", "-", "placeholder", "todo", "tbd", "pending", "unused", "unknown":
 		return true
 	}
 	return false
+}
+
+const (
+	minWordsReasoning = 5
+	minWordsOptional  = 2
+)
+
+func isStub(s string, minWords int) bool {
+	s = strings.TrimSpace(s)
+	if isPlaceholder(s) {
+		return true
+	}
+	return s != "" && len(strings.Fields(s)) < minWords
 }
 
 func repairVerdict(in *verdictInput) bool {
@@ -286,17 +299,17 @@ func repairVerdict(in *verdictInput) bool {
 		}
 		switch field {
 		case "reasoning":
-			if isPlaceholder(in.Reasoning) {
+			if isStub(in.Reasoning, minWordsReasoning) {
 				in.Reasoning = value
 				repaired = true
 			}
 		case "exploit_sketch":
-			if isPlaceholder(in.ExploitSketch) {
+			if isStub(in.ExploitSketch, minWordsOptional) {
 				in.ExploitSketch = value
 				repaired = true
 			}
 		case "suggested_fix":
-			if isPlaceholder(in.SuggestedFix) {
+			if isStub(in.SuggestedFix, minWordsOptional) {
 				in.SuggestedFix = value
 				repaired = true
 			}
@@ -337,11 +350,17 @@ func repairVerdict(in *verdictInput) bool {
 		}
 	}
 
-	if isPlaceholder(in.ExploitSketch) {
+	if isStub(in.ExploitSketch, minWordsOptional) && in.ExploitSketch != "" {
 		in.ExploitSketch = ""
+		repaired = true
 	}
-	if isPlaceholder(in.SuggestedFix) {
+	if isStub(in.SuggestedFix, minWordsOptional) && in.SuggestedFix != "" {
 		in.SuggestedFix = ""
+		repaired = true
+	}
+	if isStub(in.Reasoning, minWordsReasoning) {
+		in.Reasoning = "the model did not provide usable reasoning for this finding"
+		repaired = true
 	}
 	return repaired
 }
